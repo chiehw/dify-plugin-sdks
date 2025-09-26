@@ -4,7 +4,7 @@ import logging
 import uuid
 from collections.abc import Generator
 from decimal import Decimal
-from typing import Any, Union, cast
+from typing import Any, Optional, Union, cast
 from urllib.parse import urljoin
 
 import requests
@@ -39,6 +39,7 @@ from dify_plugin.entities.model.message import (
     SystemPromptMessage,
     ToolPromptMessage,
     UserPromptMessage,
+    VideoPromptMessageContent,
 )
 from dify_plugin.errors.model import CredentialsValidateFailedError, InvokeError
 from dify_plugin.interfaces.model.large_language_model import LargeLanguageModel
@@ -110,10 +111,10 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         credentials: dict,
         prompt_messages: list[PromptMessage],
         model_parameters: dict,
-        tools: list[PromptMessageTool] | None = None,
-        stop: list[str] | None = None,
+        tools: Optional[list[PromptMessageTool]] = None,
+        stop: Optional[list[str]] = None,
         stream: bool = True,
-        user: str | None = None,
+        user: Optional[str] = None,
     ) -> Union[LLMResult, Generator]:
         """
         Invoke large language model
@@ -146,7 +147,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         model: str,
         credentials: dict,
         prompt_messages: list[PromptMessage],
-        tools: list[PromptMessageTool] | None = None,
+        tools: Optional[list[PromptMessageTool]] = None,
     ) -> int:
         """
         Get number of tokens for given prompt messages
@@ -180,7 +181,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                 endpoint_url += "/"
 
             # prepare the payload for a simple ping to the model
-            data = {"model": credentials.get("endpoint_model_name", model), "max_tokens": 5}
+            data = {"model": model, "max_tokens": 5}
 
             completion_type = LLMMode.value_of(credentials["mode"])
 
@@ -203,8 +204,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                 response = requests.post(endpoint_url, headers=headers, json=data, timeout=(10, 300), stream=True)
                 if response.status_code != 200:
                     raise CredentialsValidateFailedError(
-                        f"Credentials validation failed with status code {response.status_code} "
-                        f"and response body {response.text}"
+                        f"Credentials validation failed with status code {response.status_code}"
                     )
                 return
 
@@ -213,16 +213,13 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
 
             if response.status_code != 200:
                 raise CredentialsValidateFailedError(
-                    f"Credentials validation failed with status code {response.status_code} "
-                    f"and response body {response.text}"
+                    f"Credentials validation failed with status code {response.status_code}"
                 )
 
             try:
                 json_result = response.json()
             except json.JSONDecodeError:
-                raise CredentialsValidateFailedError(
-                    f"Credentials validation failed: JSON decode error, response body {response.text}"
-                ) from None
+                raise CredentialsValidateFailedError("Credentials validation failed: JSON decode error") from None
 
             if completion_type is LLMMode.CHAT and json_result.get("object", "") == "":
                 json_result["object"] = "chat.completion"
@@ -233,22 +230,18 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                 "object" not in json_result or json_result["object"] != "chat.completion"
             ):
                 raise CredentialsValidateFailedError(
-                    f"Credentials validation failed: invalid response object, "
-                    f"must be 'chat.completion', response body {response.text}"
+                    "Credentials validation failed: invalid response object, must be 'chat.completion'"
                 )
             elif completion_type is LLMMode.COMPLETION and (
                 "object" not in json_result or json_result["object"] != "text_completion"
             ):
                 raise CredentialsValidateFailedError(
-                    f"Credentials validation failed: invalid response object, "
-                    f"must be 'text_completion', response body {response.text}"
+                    "Credentials validation failed: invalid response object, must be 'text_completion'"
                 )
         except CredentialsValidateFailedError:
             raise
         except Exception as ex:
-            raise CredentialsValidateFailedError(
-                f"An error occurred during credentials validation: {ex!s}, response body {response.text}"
-            ) from ex
+            raise CredentialsValidateFailedError(f"An error occurred during credentials validation: {ex!s}") from ex
 
     def get_customizable_model_schema(self, model: str, credentials: dict) -> AIModelEntity:
         """
@@ -375,10 +368,10 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         credentials: dict,
         prompt_messages: list[PromptMessage],
         model_parameters: dict,
-        tools: list[PromptMessageTool] | None = None,
-        stop: list[str] | None = None,
+        tools: Optional[list[PromptMessageTool]] = None,
+        stop: Optional[list[str]] = None,
         stream: bool = True,
-        user: str | None = None,
+        user: Optional[str] = None,
     ) -> Union[LLMResult, Generator]:
         """
         Invoke llm completion model
@@ -428,7 +421,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         elif "json_schema" in model_parameters:
             del model_parameters["json_schema"]
 
-        data = {"model": credentials.get("endpoint_model_name", model), "stream": stream, **model_parameters}
+        data = {"model": model, "stream": stream, **model_parameters}
 
         completion_type = LLMMode.value_of(credentials["mode"])
 
@@ -694,14 +687,14 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         # transform response
         result = LLMResult(
             id=message_id,
-            model=response_json.get("model", model),
+            model=response_json["model"],
             message=assistant_message,
             usage=usage,
         )
 
         return result
 
-    def _convert_prompt_message_to_dict(self, message: PromptMessage, credentials: dict | None = None) -> dict:
+    def _convert_prompt_message_to_dict(self, message: PromptMessage, credentials: Optional[dict] = None) -> dict:
         """
         Convert PromptMessage to dict for OpenAI API format
         """
@@ -727,6 +720,15 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                             "image_url": {
                                 "url": message_content.data,
                                 "detail": message_content.detail.value,
+                            },
+                        }
+                        sub_messages.append(sub_message_dict)
+                    elif message_content.type == PromptMessageContentType.VIDEO:
+                        message_content = cast(VideoPromptMessageContent, message_content)
+                        sub_message_dict = {
+                            "type": "video_url",
+                            "video_url": {
+                                "url": message_content.data,
                             },
                         }
                         sub_messages.append(sub_message_dict)
@@ -774,7 +776,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
     def _num_tokens_from_string(
         self,
         text: Union[str, list[PromptMessageContent]],
-        tools: list[PromptMessageTool] | None = None,
+        tools: Optional[list[PromptMessageTool]] = None,
     ) -> int:
         """
         Approximate num tokens for model with gpt2 tokenizer.
@@ -802,8 +804,8 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
     def _num_tokens_from_messages(
         self,
         messages: list[PromptMessage],
-        tools: list[PromptMessageTool] | None = None,
-        credentials: dict | None = None,
+        tools: Optional[list[PromptMessageTool]] = None,
+        credentials: Optional[dict] = None,
     ) -> int:
         """
         Approximate num tokens with GPT2 tokenizer.
